@@ -15,10 +15,10 @@ let statusAtual = 'Gerando QR Code...';
 let qrAtual = '';
 
 const estadoUsuarios = {};
-const atendimentoHumano = new Map(); // Guarda contatos que VOCÊ chamou primeiro
+const atendimentoHumano = new Map();
 const mensagensEnquete = new Map();
+const idsEnviadosPeloBot = new Set(); // Registra os IDs das mensagens enviadas pelo robô
 
-// Tempo que o robô fica em silêncio após você mandar uma mensagem manual (12 horas)
 const TEMPO_PAUSA_HUMANA_MS = 12 * 60 * 60 * 1000;
 
 const OPCOES_MENU = [
@@ -48,6 +48,18 @@ const RESPOSTAS = {
   DESPEDIDA:
     'A *IPDA Setorial Contagem* agradece o seu contato. 🙏🌈\nQualquer outra necessidade, estamos à disposição.\n\nQue Deus abençoe sua vida! ✨'
 };
+
+// Envia mensagem registrando o ID para não confundir com atendimento humano
+async function enviarMensagemBot(sock, jid, conteudo) {
+  const sent = await sock.sendMessage(jid, conteudo);
+  if (sent?.key?.id) {
+    idsEnviadosPeloBot.add(sent.key.id);
+    if (conteudo.poll) {
+      mensagensEnquete.set(sent.key.id, sent);
+    }
+  }
+  return sent;
+}
 
 function normalizar(str) {
   return (str || '')
@@ -125,51 +137,49 @@ function detectarIntencao(textoNormalizado) {
 
 async function enviarMenu(sock, jid) {
   estadoUsuarios[jid] = 'MENU';
-  const sent = await sock.sendMessage(jid, {
+  await enviarMensagemBot(sock, jid, {
     poll: {
       name: 'A paz do Senhor Jesus! 🙌\nA IPDA Setorial Contagem agradece o seu contato.\n\nToque na opção desejada:',
       values: OPCOES_MENU,
       selectableCount: 1
     }
   });
-  if (sent?.key?.id) mensagensEnquete.set(sent.key.id, sent);
 }
 
 async function enviarAlgoMais(sock, jid) {
   estadoUsuarios[jid] = 'ALGO_MAIS';
-  const sent = await sock.sendMessage(jid, {
+  await enviarMensagemBot(sock, jid, {
     poll: {
       name: 'Te ajudo em algo mais?',
       values: OPCOES_ALGO_MAIS,
       selectableCount: 1
     }
   });
-  if (sent?.key?.id) mensagensEnquete.set(sent.key.id, sent);
 }
 
 async function executarAcao(sock, jid, acao) {
   if (acao === 'COMPROVANTE') {
     estadoUsuarios[jid] = 'AGUARDANDO_COMPROVANTE';
-    await sock.sendMessage(jid, { text: RESPOSTAS.PEDIR_COMPROVANTE });
+    await enviarMensagemBot(sock, jid, { text: RESPOSTAS.PEDIR_COMPROVANTE });
     return;
   }
   if (acao === 'CHAVE_PIX') {
-    await sock.sendMessage(jid, { text: RESPOSTAS.CHAVE_PIX });
+    await enviarMensagemBot(sock, jid, { text: RESPOSTAS.CHAVE_PIX });
     await enviarAlgoMais(sock, jid);
     return;
   }
   if (acao === 'HORARIOS') {
-    await sock.sendMessage(jid, { text: RESPOSTAS.HORARIOS });
+    await enviarMensagemBot(sock, jid, { text: RESPOSTAS.HORARIOS });
     await enviarAlgoMais(sock, jid);
     return;
   }
   if (acao === 'OFERTAR') {
-    await sock.sendMessage(jid, { text: RESPOSTAS.OFERTAR });
+    await enviarMensagemBot(sock, jid, { text: RESPOSTAS.OFERTAR });
     await enviarAlgoMais(sock, jid);
     return;
   }
   if (acao === 'CONTATOS') {
-    await sock.sendMessage(jid, { text: RESPOSTAS.CONTATOS });
+    await enviarMensagemBot(sock, jid, { text: RESPOSTAS.CONTATOS });
     await enviarAlgoMais(sock, jid);
   }
 }
@@ -180,7 +190,7 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
 
   if (estadoAtual === 'AGUARDANDO_COMPROVANTE') {
     if (enviouArquivoOuImagem) {
-      await sock.sendMessage(jid, {
+      await enviarMensagemBot(sock, jid, {
         text: '✅ *Comprovante recebido com sucesso!* Nossa equipe fará a conferência.\nDeus abençoe pela sua fidelidade! 🙏'
       });
       await enviarAlgoMais(sock, jid);
@@ -193,7 +203,7 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
       return;
     }
 
-    await sock.sendMessage(jid, {
+    await enviarMensagemBot(sock, jid, {
       text: `Desculpe, não entendi. 🤔\nAinda estou aguardando o seu *comprovante do Pix*.\n\n${RESPOSTAS.PEDIR_COMPROVANTE}`
     });
     return;
@@ -206,7 +216,7 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
     }
     if (norm.includes('nao') || norm === '2' || norm === 'n') {
       delete estadoUsuarios[jid];
-      await sock.sendMessage(jid, { text: RESPOSTAS.DESPEDIDA });
+      await enviarMensagemBot(sock, jid, { text: RESPOSTAS.DESPEDIDA });
       return;
     }
 
@@ -216,7 +226,7 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
       return;
     }
 
-    await sock.sendMessage(jid, {
+    await enviarMensagemBot(sock, jid, {
       text: 'Desculpe, não entendi sua resposta. 🤔 Por favor, toque em uma das opções abaixo para continuar:'
     });
     await enviarAlgoMais(sock, jid);
@@ -224,11 +234,11 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
   }
 
   if (veioDeEnquete || estadoAtual === 'MENU') {
-    if (norm.startsWith('1')) return executarAcao(sock, jid, 'COMPROVANTE');
-    if (norm.startsWith('2')) return executarAcao(sock, jid, 'CHAVE_PIX');
-    if (norm.startsWith('3')) return executarAcao(sock, jid, 'HORARIOS');
-    if (norm.startsWith('4')) return executarAcao(sock, jid, 'OFERTAR');
-    if (norm.startsWith('5')) return executarAcao(sock, jid, 'CONTATOS');
+    if (norm.startsWith('1') || norm.includes('comprovante')) return executarAcao(sock, jid, 'COMPROVANTE');
+    if (norm.startsWith('2') || norm.includes('chave pix')) return executarAcao(sock, jid, 'CHAVE_PIX');
+    if (norm.startsWith('3') || norm.includes('horario')) return executarAcao(sock, jid, 'HORARIOS');
+    if (norm.startsWith('4') || norm.includes('ofertar')) return executarAcao(sock, jid, 'OFERTAR');
+    if (norm.startsWith('5') || norm.includes('contato')) return executarAcao(sock, jid, 'CONTATOS');
   }
 
   const intencaoDireta = detectarIntencao(norm);
@@ -238,7 +248,7 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
   }
 
   if (estadoAtual === 'MENU') {
-    await sock.sendMessage(jid, {
+    await enviarMensagemBot(sock, jid, {
       text: 'Desculpe, não entendi o que você digitou. 🤔\nPor favor, toque em uma das opções abaixo (ou digite o número de *1* a *5*):'
     });
     await enviarMenu(sock, jid);
@@ -246,6 +256,40 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
   }
 
   await enviarMenu(sock, jid);
+}
+
+// Função dedicada para extrair o voto de qualquer evento de enquete
+async function tratarVotoEnquete(sock, jid, pollUpdateMsg, keyVoto) {
+  try {
+    const pollMsgId = pollUpdateMsg?.pollCreationMessageKey?.id;
+    if (!pollMsgId) return;
+
+    const pollCreationMsg = mensagensEnquete.get(pollMsgId);
+    if (!pollCreationMsg) return;
+
+    const pollEncKey = pollCreationMsg.message?.messageContextInfo?.messageSecret;
+    if (!pollEncKey) return;
+
+    const pollCreatorJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
+    const votoDecifrado = decryptPollVote(pollUpdateMsg.vote, {
+      pollCreatorJid,
+      pollMsgId,
+      pollEncKey,
+      voterJid: jid
+    });
+
+    const votosAgregados = getAggregateVotesInPollMessage({
+      message: pollCreationMsg.message,
+      pollUpdates: [{ pollUpdateMessageKey: keyVoto, vote: votoDecifrado }]
+    });
+
+    const opcaoEscolhida = votosAgregados.find((v) => v.voters.length > 0)?.name;
+    if (opcaoEscolhida) {
+      await processarEscolha(sock, jid, opcaoEscolhida, false, true);
+    }
+  } catch (err) {
+    console.error('Erro ao ler voto da enquete:', err.message);
+  }
 }
 
 const PORT = process.env.PORT || 10000;
@@ -313,6 +357,19 @@ async function iniciarBot() {
     }
   });
 
+  // 1. Escuta cliques em enquetes que chegam via atualização de mensagem (padrão do WhatsApp)
+  sock.ev.on('messages.update', async (updates) => {
+    for (const { key, update } of updates) {
+      if (!key?.remoteJid || key.remoteJid.endsWith('@g.us')) continue;
+      if (update?.pollUpdates) {
+        for (const pollUpd of update.pollUpdates) {
+          await tratarVotoEnquete(sock, key.remoteJid, pollUpd, pollUpd.pollUpdateMessageKey || key);
+        }
+      }
+    }
+  });
+
+  // 2. Escuta novas mensagens e votos que chegam via messages.upsert
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
 
@@ -320,55 +377,22 @@ async function iniciarBot() {
       const jid = msg.key.remoteJid;
       if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') continue;
 
-      // Se VOCÊ enviou a mensagem pelo celular, marca esse contato para o robô NÃO interferir
       if (msg.key.fromMe) {
-        // Ignora mensagens enviadas pelo próprio robô (enquetes ou textos que começam com os prefixos do bot)
-        const isEnqueteBot = Boolean(msg.message?.pollCreationMessage || msg.message?.pollCreationMessageV3);
-        const textoEnviado = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-        const isTextoBot =
-          textoEnviado.startsWith('📄 *Envio de Comprovante') ||
-          textoEnviado.startsWith('💠 *Chave Pix') ||
-          textoEnviado.startsWith('⛪ *Horários dos Cultos') ||
-          textoEnviado.startsWith('💝 *Ofertar') ||
-          textoEnviado.startsWith('🌐 *Contatos') ||
-          textoEnviado.startsWith('✅ *Comprovante recebido') ||
-          textoEnviado.startsWith('A *IPDA Setorial Contagem*') ||
-          textoEnviado.startsWith('Desculpe, não entendi');
-
-        if (!isEnqueteBot && !isTextoBot) {
+        // Se o ID da mensagem NÃO está na lista do robô, foi você quem digitou manualmente
+        if (!idsEnviadosPeloBot.has(msg.key.id)) {
           atendimentoHumano.set(jid, Date.now());
           delete estadoUsuarios[jid];
         }
         continue;
       }
 
-      // Verifica se você iniciou ou assumiu essa conversa manualmente nas últimas 12 horas
       const ultimaIntervencaoHumana = atendimentoHumano.get(jid);
       if (ultimaIntervencaoHumana && Date.now() - ultimaIntervencaoHumana < TEMPO_PAUSA_HUMANA_MS) {
-        continue; // Fica em silêncio para não atrapalhar sua conversa manual
+        continue;
       }
 
       if (msg.message?.pollUpdateMessage) {
-        const pollCreationMsg = mensagensEnquete.get(msg.message.pollUpdateMessage.pollCreationMessageKey.id);
-        if (pollCreationMsg) {
-          const pollEncKey = pollCreationMsg.message?.messageContextInfo?.messageSecret;
-          if (pollEncKey) {
-            const votoDecifrado = decryptPollVote(msg.message.pollUpdateMessage.vote, {
-              pollCreatorJid: sock.user.id.split(':')[0] + '@s.whatsapp.net',
-              pollMsgId: msg.message.pollUpdateMessage.pollCreationMessageKey.id,
-              pollEncKey,
-              voterJid: jid
-            });
-            const votosAgregados = getAggregateVotesInPollMessage({
-              message: pollCreationMsg.message,
-              pollUpdates: [{ pollUpdateMessageKey: msg.key, vote: votoDecifrado }]
-            });
-            const opcaoEscolhida = votosAgregados.find((v) => v.voters.length > 0)?.name;
-            if (opcaoEscolhida) {
-              await processarEscolha(sock, jid, opcaoEscolhida, false, true);
-            }
-          }
-        }
+        await tratarVotoEnquete(sock, jid, msg.message.pollUpdateMessage, msg.key);
         continue;
       }
 
