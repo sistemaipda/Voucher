@@ -1,5 +1,6 @@
 const http = require('http');
 const fs = require('fs');
+const url = require('url');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -9,16 +10,33 @@ const {
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 
-const MEU_NUMERO = '5531986775326';
-let statusAtual = 'Iniciando...';
+let statusAtual = 'Aguardando número para gerar código...';
 let codigoPareamento = '';
+let sockAtual = null;
 
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => {
-  if (req.url === '/reset') {
+http.createServer(async (req, res) => {
+  const parsed = url.parse(req.url, true);
+
+  if (parsed.pathname === '/gerar' && parsed.query.num) {
+    const numeroLimpo = parsed.query.num.replace(/\D/g, '');
+    if (sockAtual && !sockAtual.authState.creds.registered) {
+      try {
+        codigoPareamento = await sockAtual.requestPairingCode(numeroLimpo);
+        statusAtual = `Código gerado para ${numeroLimpo}`;
+      } catch (e) {
+        statusAtual = 'Erro ao gerar. Toque em Limpar Sessão e tente de novo.';
+      }
+    }
+    res.writeHead(302, { Location: '/' });
+    res.end();
+    return;
+  }
+
+  if (parsed.pathname === '/reset') {
     fs.rmSync('sessao_whatsapp', { recursive: true, force: true });
     codigoPareamento = '';
-    statusAtual = 'Reiniciando sessao...';
+    statusAtual = 'Reiniciando...';
     res.writeHead(302, { Location: '/' });
     res.end();
     process.exit(0);
@@ -28,11 +46,20 @@ http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta http-equiv="refresh" content="5">
-    <body style="font-family:sans-serif;text-align:center;padding:30px">
-      <h2>Status: ${statusAtual}</h2>
-      ${codigoPareamento ? `<p>Digite no WhatsApp:</p><h1 style="font-size:36px;letter-spacing:4px;background:#eee;padding:15px">${codigoPareamento}</h1>` : ''}
-      <br><a href="/reset" style="padding:10px 20px;background:#d9534f;color:#fff;text-decoration:none;border-radius:5px">Gerar Novo Código</a>
+    ${codigoPareamento ? '<meta http-equiv="refresh" content="5">' : ''}
+    <body style="font-family:sans-serif;text-align:center;padding:25px">
+      <h3>Status: ${statusAtual}</h3>
+      ${codigoPareamento ? `
+        <p>Digite no WhatsApp agora:</p>
+        <h1 style="font-size:34px;letter-spacing:4px;background:#eee;padding:15px">${codigoPareamento}</h1>
+      ` : `
+        <form action="/gerar" method="get" style="margin:20px 0">
+          <p>Escolha o formato do número:</p>
+          <button name="num" value="553186775326" style="padding:12px 20px;font-size:16px;background:#25D366;color:#fff;border:none;border-radius:5px;margin:5px">1º Teste: SEM o 9 (553186775326)</button><br>
+          <button name="num" value="5531986775326" style="padding:12px 20px;font-size:16px;background:#128C7E;color:#fff;border:none;border-radius:5px;margin:5px">2º Teste: COM o 9 (5531986775326)</button>
+        </form>
+      `}
+      <br><a href="/reset" style="padding:10px 18px;background:#d9534f;color:#fff;text-decoration:none;border-radius:5px">Limpar Sessão</a>
     </body>
   `);
 }).listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
@@ -48,20 +75,8 @@ async function iniciarBot() {
     printQRInTerminal: false
   });
 
+  sockAtual = sock;
   sock.ev.on('creds.update', saveCreds);
-
-  if (!sock.authState.creds.registered && !codigoPareamento) {
-    setTimeout(async () => {
-      try {
-        const codigo = await sock.requestPairingCode(MEU_NUMERO);
-        codigoPareamento = codigo;
-        statusAtual = 'Aguardando digitar o código no WhatsApp';
-        console.log(`SEU CODIGO DE PAREAMENTO: ${codigo}`);
-      } catch (err) {
-        statusAtual = 'Erro ao gerar código. Toque em Gerar Novo Código.';
-      }
-    }, 3000);
-  }
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect } = update;
@@ -70,13 +85,12 @@ async function iniciarBot() {
       if (motivo === DisconnectReason.loggedOut) {
         fs.rmSync('sessao_whatsapp', { recursive: true, force: true });
         codigoPareamento = '';
-        statusAtual = 'Desconectado. Gerando novo código...';
+        statusAtual = 'Desconectado.';
       }
       setTimeout(iniciarBot, 3000);
     } else if (connection === 'open') {
       codigoPareamento = '';
       statusAtual = '✅ WhatsApp Conectado!';
-      console.log('WhatsApp conectado com sucesso!');
     }
   });
 
@@ -108,5 +122,8 @@ async function iniciarBot() {
     }
   });
 }
+
+iniciarBot();
+
 
 iniciarBot();
