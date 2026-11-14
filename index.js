@@ -1,6 +1,5 @@
 const http = require('http');
 const fs = require('fs');
-const url = require('url');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -10,32 +9,14 @@ const {
 } = require('@whiskeysockets/baileys');
 const { Boom } = require('@hapi/boom');
 
-let statusAtual = 'Aguardando número para gerar código...';
-let codigoPareamento = '';
-let sockAtual = null;
+let statusAtual = 'Gerando QR Code...';
+let qrAtual = '';
 
 const PORT = process.env.PORT || 10000;
-http.createServer(async (req, res) => {
-  const parsed = url.parse(req.url, true);
-
-  if (parsed.pathname === '/gerar' && parsed.query.num) {
-    const numeroLimpo = parsed.query.num.replace(/\D/g, '');
-    if (sockAtual && !sockAtual.authState.creds.registered) {
-      try {
-        codigoPareamento = await sockAtual.requestPairingCode(numeroLimpo);
-        statusAtual = `Código gerado para ${numeroLimpo}`;
-      } catch (e) {
-        statusAtual = 'Erro ao gerar. Toque em Limpar Sessão e tente de novo.';
-      }
-    }
-    res.writeHead(302, { Location: '/' });
-    res.end();
-    return;
-  }
-
-  if (parsed.pathname === '/reset') {
+http.createServer((req, res) => {
+  if (req.url === '/reset') {
     fs.rmSync('sessao_whatsapp', { recursive: true, force: true });
-    codigoPareamento = '';
+    qrAtual = '';
     statusAtual = 'Reiniciando...';
     res.writeHead(302, { Location: '/' });
     res.end();
@@ -43,23 +24,18 @@ http.createServer(async (req, res) => {
     return;
   }
 
+  const qrImgUrl = qrAtual
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(qrAtual)}`
+    : '';
+
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    ${codigoPareamento ? '<meta http-equiv="refresh" content="5">' : ''}
-    <body style="font-family:sans-serif;text-align:center;padding:25px">
+    <meta http-equiv="refresh" content="8">
+    <body style="font-family:sans-serif;text-align:center;padding:20px">
       <h3>Status: ${statusAtual}</h3>
-      ${codigoPareamento ? `
-        <p>Digite no WhatsApp agora:</p>
-        <h1 style="font-size:34px;letter-spacing:4px;background:#eee;padding:15px">${codigoPareamento}</h1>
-      ` : `
-        <form action="/gerar" method="get" style="margin:20px 0">
-          <p>Escolha o formato do número:</p>
-          <button name="num" value="553186775326" style="padding:12px 20px;font-size:16px;background:#25D366;color:#fff;border:none;border-radius:5px;margin:5px">1º Teste: SEM o 9 (553186775326)</button><br>
-          <button name="num" value="5531986775326" style="padding:12px 20px;font-size:16px;background:#128C7E;color:#fff;border:none;border-radius:5px;margin:5px">2º Teste: COM o 9 (5531986775326)</button>
-        </form>
-      `}
-      <br><a href="/reset" style="padding:10px 18px;background:#d9534f;color:#fff;text-decoration:none;border-radius:5px">Limpar Sessão</a>
+      ${qrImgUrl ? `<p>Escaneie este QR Code no WhatsApp:</p><img src="${qrImgUrl}" style="border:10px solid #fff;box-shadow:0 0 10px rgba(0,0,0,0.2)">` : ''}
+      <br><br><a href="/reset" style="padding:10px 18px;background:#d9534f;color:#fff;text-decoration:none;border-radius:5px">Reiniciar</a>
     </body>
   `);
 }).listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
@@ -75,21 +51,24 @@ async function iniciarBot() {
     printQRInTerminal: false
   });
 
-  sockAtual = sock;
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect } = update;
+    const { connection, lastDisconnect, qr } = update;
+    if (qr) {
+      qrAtual = qr;
+      statusAtual = 'Aguardando leitura do QR Code...';
+    }
     if (connection === 'close') {
       const motivo = new Boom(lastDisconnect?.error)?.output?.statusCode;
       if (motivo === DisconnectReason.loggedOut) {
         fs.rmSync('sessao_whatsapp', { recursive: true, force: true });
-        codigoPareamento = '';
+        qrAtual = '';
         statusAtual = 'Desconectado.';
       }
       setTimeout(iniciarBot, 3000);
     } else if (connection === 'open') {
-      codigoPareamento = '';
+      qrAtual = '';
       statusAtual = '✅ WhatsApp Conectado!';
     }
   });
@@ -122,8 +101,5 @@ async function iniciarBot() {
     }
   });
 }
-
-iniciarBot();
-
 
 iniciarBot();
