@@ -15,7 +15,11 @@ let statusAtual = 'Gerando QR Code...';
 let qrAtual = '';
 
 const estadoUsuarios = {};
+const atendimentoHumano = new Map(); // Guarda contatos que VOCÊ chamou primeiro
 const mensagensEnquete = new Map();
+
+// Tempo que o robô fica em silêncio após você mandar uma mensagem manual (12 horas)
+const TEMPO_PAUSA_HUMANA_MS = 12 * 60 * 60 * 1000;
 
 const OPCOES_MENU = [
   '1️⃣ Enviar Comprovante do Pix',
@@ -45,7 +49,6 @@ const RESPOSTAS = {
     'A *IPDA Setorial Contagem* agradece o seu contato. 🙏🌈\nQualquer outra necessidade, estamos à disposição.\n\nQue Deus abençoe sua vida! ✨'
 };
 
-// Normaliza acentos para facilitar o reconhecimento de perguntas naturais
 function normalizar(str) {
   return (str || '')
     .toLowerCase()
@@ -54,11 +57,9 @@ function normalizar(str) {
     .trim();
 }
 
-// Identifica se a mensagem faz uma pergunta/menção direta a algum assunto
 function detectarIntencao(textoNormalizado) {
   if (!textoNormalizado || textoNormalizado.length < 2) return null;
 
-  // 1. Enviar comprovante
   if (
     textoNormalizado.includes('comprovante') ||
     textoNormalizado.includes('recibo') ||
@@ -70,7 +71,6 @@ function detectarIntencao(textoNormalizado) {
     return 'COMPROVANTE';
   }
 
-  // 2. Chave Pix / CNPJ
   if (
     textoNormalizado.includes('chave') ||
     textoNormalizado.includes('cnpj') ||
@@ -82,7 +82,6 @@ function detectarIntencao(textoNormalizado) {
     return 'CHAVE_PIX';
   }
 
-  // 3. Horários e dias de culto
   if (
     textoNormalizado.includes('horario') ||
     textoNormalizado.includes('hora') ||
@@ -99,7 +98,6 @@ function detectarIntencao(textoNormalizado) {
     return 'HORARIOS';
   }
 
-  // 4. Ofertar / Dizimar / Cartão / Livraria
   if (
     textoNormalizado.includes('oferta') ||
     textoNormalizado.includes('dizim') ||
@@ -110,7 +108,6 @@ function detectarIntencao(textoNormalizado) {
     return 'OFERTAR';
   }
 
-  // 5. Contatos / Site / Redes sociais
   if (
     textoNormalizado.includes('site') ||
     textoNormalizado.includes('instagram') ||
@@ -181,7 +178,6 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
   const norm = normalizar(escolha);
   const estadoAtual = estadoUsuarios[jid] || 'INICIO';
 
-  // 1. Se estava aguardando o comprovante
   if (estadoAtual === 'AGUARDANDO_COMPROVANTE') {
     if (enviouArquivoOuImagem) {
       await sock.sendMessage(jid, {
@@ -191,21 +187,18 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
       return;
     }
 
-    // Se a pessoa fez uma pergunta sobre outro assunto enquanto estava nessa etapa
     const intencao = detectarIntencao(norm);
     if (intencao && intencao !== 'COMPROVANTE') {
       await executarAcao(sock, jid, intencao);
       return;
     }
 
-    // Se mandou "." ou mensagem sem ser o arquivo, mantém na mesma etapa sem reiniciar
     await sock.sendMessage(jid, {
       text: `Desculpe, não entendi. 🤔\nAinda estou aguardando o seu *comprovante do Pix*.\n\n${RESPOSTAS.PEDIR_COMPROVANTE}`
     });
     return;
   }
 
-  // 2. Se estava na etapa "Te ajudo em algo mais?"
   if (estadoAtual === 'ALGO_MAIS') {
     if (norm.includes('sim') || norm === '1' || norm === 's') {
       await enviarMenu(sock, jid);
@@ -217,14 +210,12 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
       return;
     }
 
-    // Verifica se a pessoa já emendou uma pergunta direta (ex: "qual o horário?")
     const intencao = detectarIntencao(norm);
     if (intencao) {
       await executarAcao(sock, jid, intencao);
       return;
     }
 
-    // Se mandou "." ou algo inválido, avisa e repete apenas a pergunta atual
     await sock.sendMessage(jid, {
       text: 'Desculpe, não entendi sua resposta. 🤔 Por favor, toque em uma das opções abaixo para continuar:'
     });
@@ -232,7 +223,6 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
     return;
   }
 
-  // 3. Verifica seleção numérica/enquete no MENU ou pergunta direta em qualquer ponto
   if (veioDeEnquete || estadoAtual === 'MENU') {
     if (norm.startsWith('1')) return executarAcao(sock, jid, 'COMPROVANTE');
     if (norm.startsWith('2')) return executarAcao(sock, jid, 'CHAVE_PIX');
@@ -241,14 +231,12 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
     if (norm.startsWith('5')) return executarAcao(sock, jid, 'CONTATOS');
   }
 
-  // 4. Inteligência de dúvidas: funciona tanto no início quanto no meio do menu
   const intencaoDireta = detectarIntencao(norm);
   if (intencaoDireta) {
     await executarAcao(sock, jid, intencaoDireta);
     return;
   }
 
-  // 5. Se já estava no MENU e mandou "." ou algo que não existe, não reinicia: avisa e reenvia o menu
   if (estadoAtual === 'MENU') {
     await sock.sendMessage(jid, {
       text: 'Desculpe, não entendi o que você digitou. 🤔\nPor favor, toque em uma das opções abaixo (ou digite o número de *1* a *5*):'
@@ -257,7 +245,6 @@ async function processarEscolha(sock, jid, escolha, enviouArquivoOuImagem, veioD
     return;
   }
 
-  // 6. Primeiro contato (INICIO): abre as boas-vindas com o menu
   await enviarMenu(sock, jid);
 }
 
@@ -330,9 +317,36 @@ async function iniciarBot() {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
-      if (msg.key.fromMe || msg.key.remoteJid.endsWith('@g.us') || msg.key.remoteJid === 'status@broadcast') continue;
-
       const jid = msg.key.remoteJid;
+      if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast') continue;
+
+      // Se VOCÊ enviou a mensagem pelo celular, marca esse contato para o robô NÃO interferir
+      if (msg.key.fromMe) {
+        // Ignora mensagens enviadas pelo próprio robô (enquetes ou textos que começam com os prefixos do bot)
+        const isEnqueteBot = Boolean(msg.message?.pollCreationMessage || msg.message?.pollCreationMessageV3);
+        const textoEnviado = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+        const isTextoBot =
+          textoEnviado.startsWith('📄 *Envio de Comprovante') ||
+          textoEnviado.startsWith('💠 *Chave Pix') ||
+          textoEnviado.startsWith('⛪ *Horários dos Cultos') ||
+          textoEnviado.startsWith('💝 *Ofertar') ||
+          textoEnviado.startsWith('🌐 *Contatos') ||
+          textoEnviado.startsWith('✅ *Comprovante recebido') ||
+          textoEnviado.startsWith('A *IPDA Setorial Contagem*') ||
+          textoEnviado.startsWith('Desculpe, não entendi');
+
+        if (!isEnqueteBot && !isTextoBot) {
+          atendimentoHumano.set(jid, Date.now());
+          delete estadoUsuarios[jid];
+        }
+        continue;
+      }
+
+      // Verifica se você iniciou ou assumiu essa conversa manualmente nas últimas 12 horas
+      const ultimaIntervencaoHumana = atendimentoHumano.get(jid);
+      if (ultimaIntervencaoHumana && Date.now() - ultimaIntervencaoHumana < TEMPO_PAUSA_HUMANA_MS) {
+        continue; // Fica em silêncio para não atrapalhar sua conversa manual
+      }
 
       if (msg.message?.pollUpdateMessage) {
         const pollCreationMsg = mensagensEnquete.get(msg.message.pollUpdateMessage.pollCreationMessageKey.id);
